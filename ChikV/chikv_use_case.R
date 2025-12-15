@@ -61,7 +61,7 @@ for(c in cods){
 res2$evo3d_df = res2_df
 
 # THESE ARE FIGURE 3 C and D #
-write_stat_to_pdb(res2, 'ChikV/chikv_avg_block_ent.pdb')
+write_stat_to_pdb(res2, stat_name = 'avg_be', outfile = 'ChikV/chikv_avg_block_ent.pdb')
 saveRDS(res2, 'ChikV/chikungunya_results.rds')
 
 # -- fig 3b ----
@@ -70,6 +70,7 @@ res2_df = res2$evo3d_df
 
 # how are results on e2 146 #
 look = res2_df %>% filter(grepl('146_._', residue_id), msa == 'msa2')
+look
 # E - 0.40
 # F - 0.38
 # G - 0.40
@@ -100,7 +101,7 @@ summary(e2$avg_be) # median 0.6
 # top diversity positions
 coddf %>% arrange(-avg_be) %>% head()
 
-# codon 182 msa2
+# codon 182 msa2 (residue 119 E2)
 res2_df %>% filter(codon == 182, msa == 'msa2')
 
 # need site entropy of each codon as well #
@@ -110,7 +111,7 @@ coddf = calculate_site_entropy(msa_info_sets = res2$msa_info_sets,
 # view those top diversity patches again #
 coddf %>% arrange(-avg_be) %>% head()
 
-saveRDS(coddf, 'ChikV/chikungunya_avg_be_per_codon.rds')
+write_tsv(coddf, 'ChikV/chikungunya_avg_be_per_codon.tsv')
 
 # figS2: check interface of e1e2-mxra8 ----
 msa1 = 'ChikV/chikv_e1hits.fa'
@@ -123,7 +124,7 @@ res_int = run_evo3d(list(msa1, msa2),
                     pdb = pdb,
                     analysis_mode = 'residue',
                     interface_chain = c('M', 'N', 'O'),
-                    calculate_stats = FALSE,
+                    stat_controls = list(calc_site_entropy = TRUE),
                     pdb_controls = pp2, verbose = 2, detail = 2)
 
 saveRDS(res_int, 'ChikV/chikungunya_interface_results.rds')
@@ -131,7 +132,8 @@ saveRDS(res_int, 'ChikV/chikungunya_interface_results.rds')
 
 # ----------- save previous block entropy with this structure ------------ #
 
-# three interfaces -- what were there site entropies #
+# three copies of interface -- what were there site entropies #
+df_int = res_int$evo3d_df
 int = tail(df_int, 3)
 
 p1 = int$codon_patch[1]
@@ -178,5 +180,5 @@ summary(coddf %>% filter(!in_int) %>% select(site_entropy)) # median 0, IQR 0 to
 
 table(coddf$in_int, coddf$site_entropy > 1)
 coddf %>% filter(site_entropy > 1)
-res2_df %>% filter(codon == 211, msa == 'msa1')
-res2_df %>% filter(codon == 137, msa == 'msa2')
+res2_df %>% filter(codon == 211, msa == 'msa1') # highest entropy single site - residue 211 E1
+res2_df %>% filter(codon == 137, msa == 'msa2') # highest entorpy site within interface - residue 74 E2

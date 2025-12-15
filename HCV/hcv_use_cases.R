@@ -21,7 +21,7 @@ show_evo3d_defaults()
 show_evo3d_defaults('stat') # and specific module defaults
 
 # run evo3d for single site entropy and block entropy #
-res1 = run_evo3d(msa = list(msa1, msa2), detail = 2,
+res1 = run_evo3d(msa = list(msa1, msa2), detail = 1,
                  pdb = pdb1,
                  stat_controls = list(calc_site_entropy = TRUE, calc_block_entropy = TRUE,
                                       calc_avg_patch_entropy = TRUE),
@@ -53,8 +53,13 @@ write_stat_to_pdb(res1, stat_name = 'block_entropy', outfile = 'HCV/e1e2_block_e
 # read in results from fig2a,b
 res1 = readRDS('HCV/e1e2_entropy_fig2ab.rds')
 
+# can try two versions (codon frequency matched, vs codons sampled evenly) #
+
+### ------- Generate NULL block entropy distributions ---------  ###
+
+# V1
 # results can go straight to generate null models #
-null_hap = generate_null_model(res1, n = 10000, len = 15, seed = 1219)
+null_hap = generate_null_model(res1, n = 10000, len = 15, seed = 1219, match_codon_frequency = TRUE)
 
 # calculate block entropy on these null haplotypes #
 null_be = calculate_patch_stats(final_msa_subsets = null_hap$msa_subsets,
@@ -62,49 +67,74 @@ null_be = calculate_patch_stats(final_msa_subsets = null_hap$msa_subsets,
                                 stat_controls = list(calc_block_entropy = TRUE))
 
 # save null block entropy distribution #
-saveRDS(null_be, 'HCV/spatial_null_block_entropy.rds')
+write_tsv(null_be, 'HCV/spatial_null_block_entropy.tsv')
+
+# V2
+# results can go straight to generate null models #
+null_hap = generate_null_model(res1, n = 10000, len = 15, seed = 1219, match_codon_frequency = FALSE)
+
+# calculate block entropy on these null haplotypes #
+null_be = calculate_patch_stats(final_msa_subsets = null_hap$msa_subsets,
+                                residue_df = null_hap$null_df,
+                                stat_controls = list(calc_block_entropy = TRUE))
+
+# save null block entropy distribution #
+write_tsv(null_be, 'HCV/spatial_null_block_entropy_even.tsv')
 
 ### ------- TEST FOR PATCH SIGNIFICNACE ---------  ###
+# ** FUNCTION NOT PART OF PACKAGE JUST INCLUDED HERE FOR CONVIENCE ** #
+calc_sig = function(surf, null_vals, overlap = 1/3){
+
+  # compare true block entropy to null dist #
+  true_vals = surf$block_entropy
+
+  #  two-sided p value
+  m = length(null_vals)
+  p_emp = vapply(true_vals, function(x){
+    plo = (sum(null_vals <= x, na.rm=TRUE)+1)/(m+1)
+    phi = (sum(null_vals >= x, na.rm=TRUE)+1)/(m+1)
+    min(1, 2*min(plo, phi))
+  }, 0.0)
+
+  surf$pval = p_emp
+
+  # Direction label
+  mu0 = mean(null_vals, na.rm=TRUE)
+  surf$direction = ifelse(surf$block_entropy < mu0, "conserved", "diverse")
+
+  # Standardized effect
+  sd0 = sd(null_vals, na.rm=TRUE)
+  surf$z = (surf$block_entropy - mu0)/sd0
+
+  # order table on abs(zscore)
+  hold = surf[order(-abs(surf$z)),]
+  nonover = filter_overlaps(hold, overlap = 0.33)
+
+  # 4 cons / 1 div -- 0.33 over
+  # 3 cons / 1 div -- 0 over (collapse dimer interface into one patch)
+
+  # multiplicity on pruned set
+  nonover$qval = p.adjust(nonover$pval, "BH")
+  nonover$bonf = p.adjust(nonover$pval, "bonferroni")
+
+  return(list(
+    full = surf,
+    filtered = nonover
+  ))
+
+}
 
 # only track surface positions #
 res1_df = res1$evo3d_df
 surf = res1_df[!is.na(res1_df$block_entropy),]
 
+# V1 ~ codon frequency sampling ~ #
 # load in null block entropy results #
-null_be = readRDS('HCV/spatial_null_block_entropy.rds')
+null_be = read_tsv('HCV/spatial_null_block_entropy.tsv')
 null_vals = as.numeric(null_be$block_entropy) # 10K null values
 
-# compare true block entropy to null dist #
-true_vals = surf$block_entropy     # 276 observed patches
-
-#  two-sided p value
-m = length(null_vals)
-p_emp = vapply(true_vals, function(x){
-  plo = (sum(null_vals <= x, na.rm=TRUE)+1)/(m+1)
-  phi = (sum(null_vals >= x, na.rm=TRUE)+1)/(m+1)
-  min(1, 2*min(plo, phi))
-}, 0.0)
-
-surf$pval = p_emp
-
-# Direction label
-mu0 = mean(null_vals, na.rm=TRUE)
-surf$direction = ifelse(surf$block_entropy < mu0, "conserved", "diverse")
-
-# Standardized effect
-sd0 = sd(null_vals, na.rm=TRUE)
-surf$z = (surf$block_entropy - mu0)/sd0
-
-# order table on abs(zscore)
-hold = surf[order(-abs(surf$z)),]
-nonover = filter_overlaps(hold, overlap = 0.33)
-
-# 4 cons / 1 div -- 0.33 over
-# 3 cons / 1 div -- 0 over (collapse dimer interface into one patch)
-
-# multiplicity on pruned set
-nonover$qval = p.adjust(nonover$pval, "BH")
-nonover$bonf = p.adjust(nonover$pval, "bonferroni")
+sig = calc_sig(surf, null_vals, overlap = 1/3)
+nonover = sig$filtered
 
 # quick counts
 table(BH_5 = nonover$qval <= 0.05, Bonf_10 = nonover$bonf <= 0.10)
@@ -114,12 +144,35 @@ table(BH_5 = nonover$qval <= 0.05)
 calls = subset(nonover, qval <= 0.05)
 calls[c("residue_id","block_entropy","direction","z","pval","qval","bonf")]
 
-#    residue_id block_entropy direction         z       pval       qval       bonf
+#residue_id block_entropy direction         z       pval       qval       bonf
 #494     685_E_     0.0000000 conserved -2.813062 0.00019998 0.00259974 0.00519948
 #471     662_E_     0.2455437 conserved -2.639459 0.00019998 0.00259974 0.00519948
 #285     476_E_     7.6539763   diverse  2.598397 0.00079992 0.00519948 0.02079792
 #316     507_E_     0.3219429 conserved -2.585444 0.00039996 0.00346632 0.01039896
 #415     606_E_     0.5867107 conserved -2.398250 0.00339966 0.01767823 0.08839116
+
+# V2 ~ codon even sampling ~ #
+# load in null block entropy results #
+null_be = read_tsv('HCV/spatial_null_block_entropy_even.tsv')
+null_vals = as.numeric(null_be$block_entropy) # 10K null values
+
+sig = calc_sig(surf, null_vals, overlap = 1/3)
+nonover = sig$filtered
+
+# quick counts
+table(BH_5 = nonover$qval <= 0.05, Bonf_10 = nonover$bonf <= 0.10)
+table(BH_5 = nonover$qval <= 0.05)
+
+# final calls
+calls = subset(nonover, qval <= 0.05)
+calls[c("residue_id","block_entropy","direction","z","pval","qval","bonf")]
+
+#residue_id block_entropy direction         z       pval       qval       bonf
+#494     685_E_     0.0000000 conserved -2.934755 0.00019998 0.00259974 0.00519948
+#471     662_E_     0.2455437 conserved -2.765514 0.00019998 0.00259974 0.00519948
+#316     507_E_     0.3219429 conserved -2.712855 0.00039996 0.00346632 0.01039896
+#415     606_E_     0.5867107 conserved -2.530364 0.00199980 0.01039896 0.05199480
+#285     476_E_     7.6539763   diverse  2.340763 0.00079992 0.00519948 0.02079792
 
 # Fig 2d) linear block entropy, and comparison with spatial ----
 
@@ -139,13 +192,9 @@ res1_df %>% group_by(msa) %>% filter(residue_id != '-') %>%
 # first and last resolved pos of e1 in 8fsj (1-121)
 # first and last resolved pos of e2 in 8fsj (38 - 321)
 
-# need linear windows of 15 aa, with extended termini for maximum residue coverage #
-e1 = res1_df %>% filter(msa == 'msa1', codon %in% 1:(121+7))
-e2 = res1_df %>% filter(msa == 'msa2', codon %in% (38-7):(321 + 7))
-
 ##### --------- start with e1 ---------- ###
 start_pos = 1
-end_pos = 128
+end_pos = 128 # (121 + 7)
 win_size = 15
 
 # generate windows
@@ -163,16 +212,16 @@ e1_patches$msa = 'msa1'
 msa_set = .extract_msa_subsets(res1$msa_info_sets,
                                e1_patches)
 
-e1_blent = sapply(msa_set, function(x) {
-  # compute block entropy #
-  block_entropy(x, translate = TRUE)
-})
+e1_patches = calculate_patch_stats(final_msa_subsets = msa_set,
+                      residue_df = e1_patches,
+                      stat_controls = list(calc_block_entropy = TRUE))
 
-e1_patches$block_entropy = e1_blent
+# save for other analysis
+write_tsv(e1_patches, 'HCV/e1_linear_be.tsv')
 
 ####--------- do e2 as well ------------ ###
-start_pos = 31
-end_pos = 328
+start_pos = 31 # (38 -7)
+end_pos = 328  # (321 + 7)
 win_size = 15
 
 # generate windows
@@ -190,22 +239,19 @@ e2_patches$msa = 'msa2'
 msa_set = .extract_msa_subsets(res1$msa_info_sets,
                                e2_patches)
 
-e2_blent = sapply(msa_set, function(x) {
-  # compute block entropy #
-  block_entropy(x, translate = TRUE)
-})
+e2_patches = calculate_patch_stats(final_msa_subsets = msa_set,
+                                   residue_df = e2_patches,
+                                   stat_controls = list(calc_block_entropy = TRUE))
 
-e2_patches$block_entropy = e2_blent
-
-# save these for other analysis
-saveRDS(e1_patches, 'HCV/e1_linear_be.rds')
-saveRDS(e2_patches, 'HCV/e2_linear_be.rds')
+# save for other analysis
+write_tsv(e2_patches, 'HCV/e2_linear_be.tsv')
 
 ## --- calculate (spatial minus linear) block entropy --- ###
 
-e1_patches = readRDS('HCV/e1_linear_be.rds')
-e2_patches = readRDS('HCV/e2_linear_be.rds')
+e1_patches = read_tsv('HCV/e1_linear_be.tsv')
+e2_patches = read_tsv('HCV/e2_linear_be.tsv')
 res1 = readRDS('HCV/e1e2_entropy_fig2ab.rds')
+res1_df = res1$evo3d_df
 
 hold = rbind(e1_patches, e2_patches)
 hold$codon = as.character(hold$codon)
@@ -231,8 +277,8 @@ write_stat_to_pdb(res1, stat_name = 'diff', outfile = 'HCV/e1e2_entropy_diff_fig
 # testing separately #
 
 # read in linear results
-e1_patches = readRDS('HCV/e1_linear_be.rds')
-e2_patches = readRDS('HCV/e2_linear_be.rds')
+e1_patches = read_tsv('HCV/e1_linear_be.tsv')
+e2_patches = read_tsv('HCV/e2_linear_be.tsv')
 
 # read in res1 as scaffold #
 res1 = readRDS('HCV/e1e2_entropy_fig2ab.rds')
@@ -241,67 +287,85 @@ res1 = readRDS('HCV/e1e2_entropy_fig2ab.rds')
 # codon patches and msa column along with msa_info_sets build null model #
 res1$evo3d_df = e1_patches
 
+# --- V1 - with usage frequency #
+# results can go straight to generate null models #
+e1_null = generate_null_model(res1, n = 10000, len = 15, seed = 1219, match_codon_frequency = TRUE)
+
+# calculate block entropy on these null haplotypes #
+e1_null_be = calculate_patch_stats(final_msa_subsets = e1_null$msa_subsets,
+                                residue_df = e1_null$null_df,
+                                stat_controls = list(calc_block_entropy = TRUE))
+
+# save null block entropy distribution #
+write_tsv(e1_null_be, 'HCV/e1_linear_null_block_entropy.tsv')
+
+# --- V2 - without usage frequency #
 # results can go straight to generate null models #
 e1_null = generate_null_model(res1, n = 10000, len = 15, seed = 1219, match_codon_frequency = FALSE)
 
-# need to provide null haplotypes #
-msa_set = e1_null$msa_subsets
-
 # calculate block entropy on these null haplotypes #
-# we will just use block_entropy() directly
-e1_null_be = sapply(msa_set, function(x) {
-  # compute block entropy #
-  block_entropy(x, translate = TRUE)
-})
+e1_null_be = calculate_patch_stats(final_msa_subsets = e1_null$msa_subsets,
+                                   residue_df = e1_null$null_df,
+                                   stat_controls = list(calc_block_entropy = TRUE))
 
 # save null block entropy distribution #
-saveRDS(e1_null_be, 'HCV/e1_null_block_entropy.rds')
+write_tsv(e1_null_be, 'HCV/e1_linear_null_block_entropy_even.tsv')
 
 # ---- lets generate e2 null model as well --- ###
 res1$evo3d_df = e2_patches
-e2_null = generate_null_model(res1, n = 10000, len = 15, seed = 1219)
-msa_set = e2_null$msa_subsets
-e2_null_be = sapply(msa_set, function(x) {block_entropy(x, translate = TRUE)})
-saveRDS(e2_null_be, 'HCV/e2_null_block_entropy.rds')
 
-# *** test linear empirical block entropy against null models ----
+# --- V1
+e2_null = generate_null_model(res1, n = 10000, len = 15, seed = 1219, match_codon_frequency = TRUE)
+e2_null_be = calculate_patch_stats(final_msa_subsets = e2_null$msa_subsets,
+                                   residue_df = e2_null$null_df,
+                                   stat_controls = list(calc_block_entropy = TRUE))
+write_tsv(e2_null_be, 'HCV/e2_linear_null_block_entropy.tsv')
+
+# --- V2 - without usage frequency #
+e2_null = generate_null_model(res1, n = 10000, len = 15, seed = 1219, match_codon_frequency = FALSE)
+e2_null_be = calculate_patch_stats(final_msa_subsets = e2_null$msa_subsets,
+                                   residue_df = e2_null$null_df,
+                                   stat_controls = list(calc_block_entropy = TRUE))
+write_tsv(e2_null_be, 'HCV/e2_linear_null_block_entropy_even.tsv')
+
+# test linear empirical block entropy against null models ----
 
 # load res1 to get residue id #
 res1 = readRDS('HCV/e1e2_entropy_fig2ab.rds')
 res1_df = res1$evo3d_df
 
 # do one at a time #
-e1_patches = readRDS('HCV/e1_linear_be.rds')
+e1_patches = read_tsv('HCV/e1_linear_be.tsv')
 e1_patches$codon = as.character(e1_patches$codon)
 e1_patches = left_join(e1_patches, res1_df %>% select(codon, msa, residue_id))
 
+# --- V1
 # load in null block entropy results #
-null_vals = readRDS('HCV/e1_null_block_entropy.rds')
+null_vals = read_tsv('HCV/e1_linear_null_block_entropy.tsv')
+null_vals = null_vals$block_entropy
 
-# compare true block entropy to null dist #
-true_vals = e1_patches$block_entropy
+sig = calc_sig(e1_patches, null_vals, overlap = 1/3)
 
-#  two-sided p value
-m = length(null_vals)
-p_emp = vapply(true_vals, function(x){
-  plo = (sum(null_vals <= x, na.rm=TRUE)+1)/(m+1)
-  phi = (sum(null_vals >= x, na.rm=TRUE)+1)/(m+1)
-  min(1, 2*min(plo, phi))
-}, 0.0)
+nonover = sig$filtered
 
-e1_patches$pval = p_emp
+# multiplicity on pruned set
+nonover$qval = p.adjust(nonover$pval, "BH")
+nonover$bonf = p.adjust(nonover$pval, "bonferroni")
 
-# Direction label
-mu0 = mean(null_vals, na.rm=TRUE)
-e1_patches$direction = ifelse(e1_patches$block_entropy < mu0, "conserved", "diverse")
+table(BH_5 = nonover$qval <= 0.05, Bonf_10 = nonover$bonf <= 0.10)
+table(BH_5 = nonover$qval <= 0.05)
 
-# Standardized effect
-sd0 = sd(null_vals, na.rm=TRUE)
-e1_patches$z = (e1_patches$block_entropy - mu0)/sd0
+# no significant E1 regions under strict threshold
+# none under lower significance either
 
-# order table on abs(zscore)
-hold = e1_patches[order(-abs(e1_patches$z)),]
-nonover = filter_overlaps(hold, overlap = 0.33)
+# --- V2
+# load in null block entropy results #
+null_vals = read_tsv('HCV/e1_linear_null_block_entropy_even.tsv')
+null_vals = null_vals$block_entropy
+
+sig = calc_sig(e1_patches, null_vals, overlap = 1/3)
+
+nonover = sig$filtered
 
 # multiplicity on pruned set
 nonover$qval = p.adjust(nonover$pval, "BH")
@@ -315,53 +379,67 @@ table(BH_5 = nonover$qval <= 0.05)
 
 # ------ moving to E2 --- ###
 # do one at a time #
-e2_patches = readRDS('HCV/e2_linear_be.rds')
+e2_patches = read_tsv('HCV/e2_linear_be.tsv')
 e2_patches$codon = as.character(e2_patches$codon)
-e2_patches = left_join(e1_patches, res1_df %>% select(codon, msa, residue_id))
+e2_patches = left_join(e2_patches, res1_df %>% select(codon, msa, residue_id))
 
+# --- V1
 # load in null block entropy results #
-null_vals = readRDS('HCV/e2_null_block_entropy.rds')
+null_vals = read_tsv('HCV/e2_linear_null_block_entropy.tsv')
+null_vals = null_vals$block_entropy
 
-# compare true block entropy to null dist #
-true_vals = e2_patches$block_entropy
+sig = calc_sig(e2_patches, null_vals, overlap = 1/3)
 
-#  two-sided p value
-m = length(null_vals)
-p_emp = vapply(true_vals, function(x){
-  plo = (sum(null_vals <= x, na.rm=TRUE)+1)/(m+1)
-  phi = (sum(null_vals >= x, na.rm=TRUE)+1)/(m+1)
-  min(1, 2*min(plo, phi))
-}, 0.0)
-
-e2_patches$pval = p_emp
-
-# Direction label
-mu0 = mean(null_vals, na.rm=TRUE)
-e2_patches$direction = ifelse(e2_patches$block_entropy < mu0, "conserved", "diverse")
-
-# Standardized effect
-sd0 = sd(null_vals, na.rm=TRUE)
-e2_patches$z = (e2_patches$block_entropy - mu0)/sd0
-
-# order table on abs(zscore)
-hold = e2_patches[order(-abs(e2_patches$z)),]
-nonover <- filter_overlaps(hold, overlap = 0.33)
+nonover = sig$filtered
 
 # multiplicity on pruned set
 nonover$qval = p.adjust(nonover$pval, "BH")
 nonover$bonf = p.adjust(nonover$pval, "bonferroni")
 
-#
 table(BH_5 = nonover$qval <= 0.05, Bonf_10 = nonover$bonf <= 0.10)
 table(BH_5 = nonover$qval <= 0.05)
 
 # final calls
 calls = subset(nonover, qval <= 0.05)
-calls[c("block_entropy","direction","z","pval","qval","bonf")]
+calls[c("residue_id","block_entropy","direction","z","pval","qval","bonf")]
+
+# A tibble: 2 × 7
+#residue_id block_entropy direction     z     pval    qval   bonf
+#<chr>              <dbl> <chr>     <dbl>    <dbl>   <dbl>  <dbl>
+#  1 473_E_             7.67  diverse    2.67 0.000600 0.00800 0.0120
+#2 509_E_             0.161 conserved -2.26 0.000800 0.00800 0.0160
+
+# --- V2 (This is the one reported in the paper)
+# load in null block entropy results #
+null_vals = read_tsv('HCV/e2_linear_null_block_entropy_even.tsv')
+null_vals = null_vals$block_entropy
+
+sig = calc_sig(e2_patches, null_vals, overlap = 1/3)
+
+nonover = sig$filtered
+
+# A tibble: 4 × 7
+#residue_id block_entropy direction     z     pval    qval    bonf
+#<chr>              <dbl> <chr>     <dbl>    <dbl>   <dbl>   <dbl>
+#  1 473_E_             7.67  diverse    2.69 0.000200 0.00400 0.00400
+#  2 509_E_             0.161 conserved -2.32 0.000800 0.00800 0.0160
+#  3 686_E_             0.393 conserved -2.17 0.00660  0.0440  0.132
+#  4 664_E_             0.422 conserved -2.15 0.00880  0.0440  0.176
+
+# multiplicity on pruned set
+nonover$qval = p.adjust(nonover$pval, "BH")
+nonover$bonf = p.adjust(nonover$pval, "bonferroni")
+
+table(BH_5 = nonover$qval <= 0.05, Bonf_10 = nonover$bonf <= 0.10)
+table(BH_5 = nonover$qval <= 0.05)
+
+# final calls
+calls = subset(nonover, qval <= 0.05)
+calls[c("residue_id","block_entropy","direction","z","pval","qval","bonf")]
 
 # examine spatial versus linear codon patches ----
-e1_patches = readRDS('HCV/e1_linear_be.rds')
-e2_patches = readRDS('HCV/e2_linear_be.rds')
+e1_patches = read_tsv('HCV/e1_linear_be.tsv')
+e2_patches = read_tsv('HCV/e2_linear_be.tsv')
 res1 = readRDS('HCV/e1e2_entropy_fig2ab.rds')
 
 # combine linear data and add residue_id and block_entropy
@@ -406,6 +484,10 @@ max(keep$overlap)   # 13
 # Extra analyses - pulling out true haplotype counts ----
 res1 = readRDS('HCV/e1e2_entropy_fig2ab.rds')
 
+# pull out msa subsets
+res1$final_msa_subsets = .extract_msa_subsets(res1$msa_info_sets,
+                                              res1$evo3d_df)
+
 # haplotypes per window
 set = res1$final_msa_subsets$`476_E_` # 476_E_
 set = apply(set, 1, paste0, collapse = '')
@@ -435,7 +517,7 @@ length(hi) # 271 seqs
 table(hi) # 251 out of 271
 251 / 271 # 92.6%
 
-set = res2$final_msa_subsets$`561_E__pdb1` # 561_E_
+set = res1$final_msa_subsets$`561_E__pdb1` # 561_E_
 set = apply(set, 1, paste0, collapse = '')
 
 # loop through and convert to aa #
