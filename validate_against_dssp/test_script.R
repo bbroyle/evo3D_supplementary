@@ -47,12 +47,11 @@ parse_dssp = function(x){
 
 }
 
-# gathered sample set of 96 pdb structures ----
+# gathered sample set of 95 pdb structures ----
 pdb_set = read_lines('validate_against_dssp/sample_95_structures.txt')
 
 # download data
 #bio3d::get.pdb(pdb_set, path = 'validate_against_dssp/test_cif', format = 'cif')
-
 list.files('validate_against_dssp/test_cif/') %>% length()  # all downloaded
 
 # grab information about these structures #
@@ -123,7 +122,7 @@ table(is.na(chain_num$pdb_h1))  # 13 have hydrogen in elesy
 table(is.na(chain_num$pdb_h2))  # 13 have hydrogen in elety
 table(is.na(chain_num$pdb_pca))  # 6 have hydrogen in PCA
 
-# Compare the two results #
+# Compare the two results ----
 f3 = list.files('validate_against_dssp/dssp_res_cif/')
 f3 = gsub('.dssp', '', f3)
 chain_num$dssp2 = NA
@@ -215,13 +214,24 @@ keep_res2 = dplyr::bind_rows(lapply(res, `[[`, "keep"))
 # if residue is NA - that is from MKDSSP and signifies chain breaks #
 keep_res2 = keep_res2 %>% filter(!is.na(residue))
 
+# write these two chain_num and keep_res2 results #
+write_tsv(keep_res2, 'validate_against_dssp/residue_sasa_vs_dssp.tsv')
+write_tsv(chain_num, 'validate_against_dssp/pdb_issue_annotations.tsv')
 
+# inspect results ----
+keep_res2 = read_tsv('validate_against_dssp/residue_sasa_vs_dssp.tsv')
+chain_num = read_tsv('validate_against_dssp/pdb_issue_annotations.tsv')
+
+# As described in methods of paper
 keep_res2$diff1 = keep_res2$sasa - keep_res2$acc
 hist(keep_res2$diff1) # differences bounded -0.5 and 0.5 from rounding values #
 summary(keep_res2$diff1) #(median 0)#
 cor(keep_res2$sasa, keep_res2$acc) # 0.9999784 across 114140 residues
 
-
+# compare to native evo3D implement
+# important to note - most disagreement comes from altLoc atoms, and
+# its reasonable to argue using one atom location versus multiple is
+# a better approach for sasa calc #
 keep_res2$diff2 = keep_res2$no_edit_sasa - keep_res2$acc
 hist(keep_res2$diff2) # differences extend to -88 and +34 # largely from AltLOC - some from non-canonical hetatm #
 summary(keep_res2$diff2) # 7 NA (times PCA was present) - median 0
@@ -230,48 +240,8 @@ cor(hold$no_edit_sasa, hold$acc) # 0.9997519 across 114113 residues
 
 quantile(abs(keep_res2$diff2), probs = seq(0.99,1,0.001), na.rm = TRUE)  # 99.4% 0.5 or less diff #
 
-hold = keep_res2 %>% filter(is.na(diff2)) # these were HETATM previously described #
-unique(hold$pdb)
 
-# "4gag" "4toy" "5otj" "6o24" "7d9z" "8rek" #
-# these 6 have PCA which DSSP parses from seqres (as X) - and bio3d::pdb.sequence() ignores because it is HETATM #
-
-# which pdbs show largest difference #
-
-ggplot(keep_res2, aes(pdb, diff1))+geom_boxplot()+coord_flip()
-ggplot(keep_res2, aes(pdb, diff2))+geom_boxplot()+coord_flip()
-
-# 8rek has pca but no hetatm so we can see influence #
-hold = keep_res2 %>% filter(pdb == '8rek')
-summary(hold$diff2)
-
-# 817 residues #
-table(hold$diff2 > 5) # 3 have somewhat large sasa change
-hold %>% filter(diff2 > 5 | is.na(diff2))  # because PCA was not present - structure became more exposed #
-
-# how does altLoc affect exposure - drives down and up?
-x = table(keep_res2$pdb)
-chain_num$resi_count = as.vector(x[match(chain_num$structureId, names(x))])
-
-# not exact because Alt counted atoms and resi is residue count but generally close #
-chain_num$pdb_alt[is.na(chain_num$pdb_alt)] = 0
-chain_num$scale = chain_num$pdb_alt / chain_num$resi_count
-
-ggplot(chain_num, aes(scale, err3))+geom_point()
-
-keep_res2$scale = chain_num$scale[match(keep_res2$pdb, chain_num$structureId)]
-
-keep_res2 = keep_res2 %>% arrange(scale)
-keep_res2$pdb = factor(keep_res2$pdb, levels = unique(keep_res2$pdb))
-
-# or arrange by median / mean diff? #
-hold = keep_res2 %>% group_by(pdb) %>%
-  summarise(m = mean(abs(diff2), na.rm = T)) %>% arrange(m)
-
-hold$pdb = as.character(hold$pdb)
-
-keep_res2$pdb = factor(keep_res2$pdb, levels = unique(hold$pdb))
-
+# groub by pdb issue - alt loc and noncanonical AA #
 chain_num$pdb_alt[is.na(chain_num$pdb_alt)] = 0
 noalt = chain_num %>% filter(pdb_alt == 0) %>% pull(structureId)
 keep_res2$has_altLoc = ifelse(keep_res2$pdb %in% noalt, FALSE, TRUE)
@@ -286,13 +256,48 @@ keep_res2$label = NA
 ro1 = which(keep_res2$has_altLoc)
 ro2 = which(keep_res2$haspca)
 
-ro3 = intersect(ro1, ro2)
-ro4 = setdiff(ro1, ro2)
-ro5 = setdiff(ro2, ro1)
+ro3 = intersect(ro1, ro2) # both problems
+ro4 = setdiff(ro1, ro2)   # only altloc
+ro5 = setdiff(ro2, ro1)   # only noncanonical
 
 keep_res2$label = 'no_issue'
 keep_res2$label[ro3] = 'altLoc_noncanonical_AA'
 keep_res2$label[ro4] =  'altLoc'
 keep_res2$label[ro5] = 'noncanonical_AA'
 
+# order by mean(abs(diff2)) -- or just abs(max(diff2)) #
+hold = keep_res2 %>% group_by(pdb) %>%
+  summarise(nres = n(),
+            o1 = mean(abs(diff2), na.rm = TRUE),
+            o2 = abs(max(diff2, na.rm = TRUE)),
+            o3 = sum(abs(diff2) > 5, na.rm = TRUE), # adding a third number of residues missed by 5 Angstrom +
+            o4 = o3/nres) # or o3 normalized by number of residues
+
+# both essentially highlight the same issue -- (altLoc is more common - non canocial maybe has more effect (we need to check amount of impacted residues))
+keep_res2$pdb = factor(keep_res2$pdb, levels = hold %>% arrange(o1) %>% pull(pdb))
 ggplot(keep_res2, aes(pdb, diff2, color = label))+geom_boxplot()+coord_flip()
+
+keep_res2$pdb = factor(keep_res2$pdb, levels = hold %>% arrange(o2) %>% pull(pdb))
+ggplot(keep_res2, aes(pdb, diff2, color = label))+geom_boxplot()+coord_flip()
+
+# sorting by percent of residues with greater than 5 ang difference
+keep_res2$pdb = factor(keep_res2$pdb, levels = hold %>% arrange(o4) %>% pull(pdb))
+ggplot(keep_res2, aes(pdb, diff2, fill = label, color = label))+
+  annotate('rect', xmin = -Inf, xmax = Inf, ymin = -5, ymax = 5, fill = 'grey82')+
+  geom_boxplot()+coord_flip()+
+  theme_bw()+
+  ylab('Default evo3D SASA minus MKDSSP4.4.10')+
+  scale_y_continuous(breaks = seq(-90, 40, 10))+
+  xlab('PDB id sorted by percent of residues with larger than 5 Angstrom^2 difference') +
+  theme(
+    legend.position = c(0.09, 0.02),
+    legend.justification = c("left", "bottom")
+  )
+
+# add label type to hold
+hold$label = keep_res2$label[match(hold$pdb, keep_res2$pdb)]
+hold %>% filter(label == 'noncanonical_AA') # only 3 out of 817 residues affected when noncanonical was the only issue
+
+hold %>% arrange(-o4) # 7d9z as high as 10% of residues are off - yet only has 1 PCA atom -- same with 4toy (5% off)
+# take away is dssp uses altloc but I disagree with its use for spatial windows and sasa calc
+
