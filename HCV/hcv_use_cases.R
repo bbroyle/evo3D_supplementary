@@ -2,7 +2,7 @@
 
 # install package if necessary #
 
-#devtools::install_github('bbroyle/evo3D')
+devtools::install_github('bbroyle/evo3D')
 
 library(evo3D)
 library(tidyverse)
