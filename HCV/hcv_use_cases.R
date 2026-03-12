@@ -108,7 +108,7 @@ calc_sig = function(surf, null_vals, overlap = 1/3){
 
   # order table on abs(zscore)
   hold = surf[order(-abs(surf$z)),]
-  nonover = filter_overlaps(hold, overlap = 0.33)
+  nonover = filter_overlaps(hold, overlap = overlap)
 
   # 4 cons / 1 div -- 0.33 over
   # 3 cons / 1 div -- 0 over (collapse dimer interface into one patch)
